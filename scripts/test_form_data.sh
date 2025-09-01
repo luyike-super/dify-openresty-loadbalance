@@ -7,7 +7,7 @@ echo
 
 # 配置
 LOADBALANCER_URL="http://localhost:82"
-API_KEY="your_api_key_here"  # 请替换为实际的API Key
+API_KEY="usertoken--customer-service-v1"  # 使用配置文件中的user_token
 TEST_USER="test-user-123"
 TEST_FILE="/tmp/test_image.png"
 

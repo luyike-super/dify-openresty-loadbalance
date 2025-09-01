@@ -85,18 +85,25 @@ end
 
 -- 根据Token获取应用类型
 function _M.get_app_type(user_token)
+    ngx.log(ngx.INFO, "[DEBUG] get_app_type called with token: ", user_token or "nil")
+    
     if not user_token or user_token == "" then
+        ngx.log(ngx.WARN, "[DEBUG] Token is empty or nil")
         return nil
     end
 
     for app_name, app_config in pairs(config.applications) do
+        ngx.log(ngx.INFO, "[DEBUG] Checking app: ", app_name)
         for _, token in ipairs(app_config.user_tokens) do
+            ngx.log(ngx.INFO, "[DEBUG] Comparing with configured token: ", token)
             if token == user_token then
+                ngx.log(ngx.INFO, "[DEBUG] Token matched for app: ", app_name)
                 return app_name
             end
         end
     end
 
+    ngx.log(ngx.WARN, "[DEBUG] No matching token found for: ", user_token)
     return nil
 end
 
@@ -120,119 +127,189 @@ function _M.get_user_id()
         return cookie_user_id
     end
 
-    -- 4. 从请求体JSON中提取（支持Dify API）
+    -- 4. 从请求体JSON中提取（优化版本，避免阻塞）
     local content_type = ngx.var.content_type
     if content_type and string.find(content_type, "application/json") then
-        -- 读取请求体
-        ngx.req.read_body()
-        local body = ngx.req.get_body_data()
-
-        if body and body ~= "" then
-            local success, json_data = pcall(cjson.decode, body)
-            if success and json_data and json_data.user then
-                return json_data.user
-            end
+        -- 安全读取请求体，避免大文件阻塞
+        local user_id_from_body = _M.safe_parse_json_user()
+        if user_id_from_body then
+            return user_id_from_body
         end
     end
 
-    -- 5. 从multipart/form-data中提取user参数
+    -- 5. 从multipart/form-data中提取 user 字段（文件上传场景）
     if content_type and string.find(content_type, "multipart/form%-data") then
-        -- 读取请求体
-        ngx.req.read_body()
-        local body = ngx.req.get_body_data()
-        
-        if body and body ~= "" then
-            -- 解析multipart/form-data
-            local user_id = _M.parse_form_data_user(body, content_type)
-            if user_id then
-                return user_id
-            end
+        local user_id_from_form = _M.safe_parse_form_user()
+        if user_id_from_form and user_id_from_form ~= "" then
+            return user_id_from_form
         end
     end
 
     return nil
 end
 
--- 解析multipart/form-data中的user参数
-function _M.parse_form_data_user(body, content_type)
-    if not body or not content_type then
+-- 安全解析JSON请求体中的user参数（避免大文件阻塞）
+function _M.safe_parse_json_user()
+    -- 检查请求体大小，如果太大则跳过解析
+    local content_length = tonumber(ngx.var.http_content_length)
+    if content_length and content_length > 1024 * 1024 then  -- 1MB限制
+        ngx.log(ngx.WARN, "[OPTIMIZATION] Skipping JSON bod y parsing for large request: ", content_length, " bytes")
         return nil
     end
 
-    -- 提取boundary
-    local boundary = string.match(content_type, "boundary=([^;]+)")
-    if not boundary then
+    -- 使用非阻塞方式读取请求体
+    ngx.req.read_body()
+    local body = ngx.req.get_body_data()
+    
+    -- 如果body为空，尝试从临时文件读取（但限制大小）
+    if not body then
+        local body_file = ngx.req.get_body_file()
+        if body_file then
+            ngx.log(ngx.WARN, "[OPTIMIZATION] Request body too large, stored in file: ", body_file)
+            return nil  -- 不处理存储在文件中的大请求体
+        end
+    end
+
+    if body and body ~= "" then
+        local success, json_data = pcall(cjson.decode, body)
+        if success and json_data and json_data.user then
+            return json_data.user
+        end
+    end
+    
+    return nil
+end
+
+-- 解析multipart/form-data中的 user 字段（纯Lua实现）
+local function parse_multipart_user(body, boundary)
+    if not body or body == "" or not boundary or boundary == "" then
         return nil
     end
 
-    -- 清理boundary（移除可能的引号）
-    boundary = string.gsub(boundary, '"', '')
-    
-    -- 分割multipart数据
-    local parts = {}
-    local pattern = "--" .. boundary .. "\r?\n"
-    local start_pos = 1
-    
-    while true do
-        local boundary_start, boundary_end = string.find(body, pattern, start_pos)
-        if not boundary_start then
-            break
-        end
-        
-        -- 查找下一个boundary或结束标记
-        local next_boundary_start = string.find(body, "--" .. boundary, boundary_end + 1)
-        if not next_boundary_start then
-            break
-        end
-        
-        -- 提取当前part的内容
-        local part_content = string.sub(body, boundary_end + 1, next_boundary_start - 1)
-        table.insert(parts, part_content)
-        
-        start_pos = next_boundary_start
+    local delimiter = "--" .. boundary
+
+    -- 查找包含 name="user" 的part
+    local header_pattern = "Content%-Disposition:%s*form%-data;[^\n]*name=\"user\""
+    local start_pos, header_end = body:find(header_pattern)
+    if not start_pos then
+        return nil
     end
-    
-    -- 解析每个part，查找name="user"的字段
-    for _, part in ipairs(parts) do
-        -- 分离headers和content
-        local header_end = string.find(part, "\r?\n\r?\n")
-        if header_end then
-            local headers = string.sub(part, 1, header_end - 1)
-            local content = string.sub(part, header_end + 2)
-            
-            -- 检查是否是user字段
-            if string.find(headers, 'name="user"') then
-                -- 清理内容（移除可能的换行符）
-                content = string.gsub(content, "\r?\n$", "")
-                content = string.gsub(content, "^\r?\n", "")
-                
-                if content and content ~= "" then
-                    return content
-                end
-            end
+
+    -- 定位到该part的内容开始位置（空行 \r\n\r\n 之后）
+    local sep_s, sep_e = body:find("\r\n\r\n", header_end + 1, true)
+    if not sep_e then
+        return nil
+    end
+    local content_start = sep_e + 1
+
+    -- 定位到该part的结束边界（下一次出现 \r\n--boundary）
+    local next_boundary = "\r\n" .. delimiter
+    local content_end = body:find(next_boundary, content_start, true)
+    if not content_end then
+        -- 兼容某些环境只使用 \n 换行
+        next_boundary = "\n" .. delimiter
+        content_end = body:find(next_boundary, content_start, true)
+    end
+
+    local value
+    if content_end then
+        value = body:sub(content_start, content_end - 1)
+    else
+        -- 兜底：直到结束
+        value = body:sub(content_start)
+    end
+
+    -- 去除可能的尾部换行与空白
+    value = value:gsub("\r$", ""):gsub("\n$", "")
+    value = value:gsub("%s+$", "")
+    value = value:gsub("^%s+", "")
+
+    if value == "" then
+        return nil
+    end
+
+    return value
+end
+
+-- 安全解析multipart/form-data请求体中的user参数
+function _M.safe_parse_form_user()
+    -- 读取请求体与boundary
+    local content_type = ngx.var.content_type or ""
+    local boundary = content_type:match('boundary="?([^";]+)"?')
+    if not boundary or boundary == "" then
+        ngx.log(ngx.WARN, "[FORM] boundary not found in Content-Type: ", content_type)
+        return nil
+    end
+
+    ngx.req.read_body()
+
+    -- 优先从内存中获取
+    local body = ngx.req.get_body_data()
+    if body and #body > 0 then
+        local ok, user_or_err = pcall(parse_multipart_user, body, boundary)
+        if ok then
+            return user_or_err
+        else
+            ngx.log(ngx.ERR, "[FORM] parse error: ", user_or_err)
+            return nil
         end
     end
-    
+
+    -- 如果请求体被写入临时文件，读取文件内容进行解析（注意：可能较大）
+    local body_file = ngx.req.get_body_file()
+    if body_file then
+        ngx.log(ngx.INFO, "[FORM] Reading body from temp file: ", body_file)
+        local f, err = io.open(body_file, "rb")
+        if not f then
+            ngx.log(ngx.ERR, "[FORM] Failed to open temp body file: ", err)
+            return nil
+        end
+        local data = f:read("*a")
+        f:close()
+        if not data or data == "" then
+            return nil
+        end
+        local ok, user_or_err = pcall(parse_multipart_user, data, boundary)
+        if ok then
+            return user_or_err
+        else
+            ngx.log(ngx.ERR, "[FORM] parse error from file: ", user_or_err)
+            return nil
+        end
+    end
+
     return nil
 end
 
 -- 根据用户ID和应用类型获取后端实例
 function _M.get_backend_instance(app_type, user_id)
+    ngx.log(ngx.INFO, "[DEBUG] get_backend_instance called with app_type: ", app_type or "nil", ", user_id: ", user_id or "nil")
+    
     if not app_type or not user_id then
+        ngx.log(ngx.WARN, "[DEBUG] Missing app_type or user_id")
         return nil
     end
 
     local hash_ring = get_hash_ring(app_type)
     if not hash_ring then
+        ngx.log(ngx.ERR, "[DEBUG] No hash ring found for app_type: ", app_type)
         return nil
     end
 
     -- 使用一致性Hash选择节点
     local hash_key = app_type .. ":" .. user_id
+    ngx.log(ngx.INFO, "[DEBUG] Using hash_key: ", hash_key)
+    
     local node = consistent_hash.get_node(hash_ring, hash_key)
 
     if node then
+        ngx.log(ngx.INFO, "[DEBUG] Selected Dify instance - name: ", node.name or "unknown", 
+                         ", host: ", node.host or "unknown", 
+                         ", port: ", node.port or "unknown", 
+                         ", token: ", node.token or "unknown")
         return node, hash_key
+    else
+        ngx.log(ngx.ERR, "[DEBUG] No node selected for hash_key: ", hash_key)
     end
 
     return nil

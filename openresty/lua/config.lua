@@ -12,102 +12,10 @@ config.applications = {
         },
         instances = {
             {
-                name = "dify1",
-                host = "172.20.62.200",
-                port = 80,
-                token = "app-9VSEFXR2qoMRoUHfmzxClGhe",
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            },
-            {
                 name = "dify2",
                 host = "172.20.62.200",
                 port = 80,
-                token = "app-kwMz2oOx7WZpiP4buVFoMwcf",
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            },
-            {
-                name = "dify3",
-                host = "172.20.62.200",
-                port = 80,
-                token = "app-kwMz2oOx7WZpiP4buVFoMwcf",
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            }
-        }
-    },
-
-    -- 内容生成应用
-    content_generator = {
-        user_tokens = {
-            "user-token-content-generator-v1",
-            "user-token-content-generator-v2"
-        },
-        instances = {
-            {
-                name = "cg_dify1",
-                host = "192.168.1.20",
-                port = 5001,
-                token = "app-YOUR-CONTENT-GENERATOR-TOKEN-1",
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            },
-            {
-                name = "cg_dify2",
-                host = "192.168.1.21",
-                port = 5001,
-                token = "app-YOUR-CONTENT-GENERATOR-TOKEN-2", 
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            },
-            {
-                name = "cg_dify3",
-                host = "192.168.1.22",
-                port = 5001,
-                token = "app-YOUR-CONTENT-GENERATOR-TOKEN-3",
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            }
-        }
-    },
-
-    -- 数据分析应用
-    data_analysis = {
-        user_tokens = {
-            "user-token-data-analysis-v1",
-            "user-token-data-analysis-v2"
-        },
-        instances = {
-            {
-                name = "da_dify1",
-                host = "192.168.1.30",
-                port = 5001,
-                token = "app-YOUR-DATA-ANALYSIS-TOKEN-1",
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            },
-            {
-                name = "da_dify2",
-                host = "192.168.1.31",
-                port = 5001,
-                token = "app-YOUR-DATA-ANALYSIS-TOKEN-2",
-                weight = 1,
-                max_fails = 3,
-                fail_timeout = 30
-            },
-            {
-                name = "da_dify3",
-                host = "192.168.1.32",
-                port = 5001,
-                token = "app-YOUR-DATA-ANALYSIS-TOKEN-3",
+                token = "app-5aXypUODhQ3GonYXmP7hO4DE",
                 weight = 1,
                 max_fails = 3,
                 fail_timeout = 30
