@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # OpenResty 负载均衡器
+  openresty-dify-lb:
+    image: openresty/openresty:1.21.4.3-3-alpine-fat
+    container_name: dify-openresty-loadbalancer
+    ports:
+      - "82:80"
+      - "446:443"  # 如需HTTPS
+    volumes:
+      - ./openresty/conf/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./openresty/conf/conf.d:/usr/local/openresty/nginx/conf/conf.d:ro
+      - ./openresty/lua:/usr/local/openresty/lualib/app:ro
+      - ./openresty/logs:/var/log/openresty
+      - ./openresty/ssl:/etc/openresty/ssl:ro
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    networks:
+      - dify-lb-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'  # x86可以使用更多CPU资源
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  dify-lb-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.15.0.0/16
