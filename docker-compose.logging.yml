@@ -1,0 +1,153 @@
+# 简化版日志分析栈 Docker Compose 配置
+# 包含核心 ELK Stack 组件
+
+version: '3.8'
+
+services:
+  # ===========================================
+  # Elasticsearch - 日志存储和搜索
+  # ===========================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: dify-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - logging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ===========================================
+  # Logstash - 日志处理和转换
+  # ===========================================
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: dify-logstash
+    volumes:
+      - ./openresty/logs:/var/log/nginx:ro
+      - logstash_data:/usr/share/logstash/data
+    ports:
+      - "5044:5044"
+      - "9600:9600"
+    environment:
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+    networks:
+      - logging
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    command: >
+      bash -c '
+        cat > /usr/share/logstash/pipeline/logstash.conf <<EOF
+        input {
+          file {
+            path => "/var/log/nginx/access.log"
+            start_position => "beginning"
+            codec => "json"
+            tags => ["nginx", "access"]
+          }
+          file {
+            path => "/var/log/nginx/app_routing.log"
+            start_position => "beginning"
+            codec => "json"
+            tags => ["nginx", "app_routing"]
+          }
+          file {
+            path => "/var/log/nginx/security_audit.log"
+            start_position => "beginning"
+            codec => "json"
+            tags => ["nginx", "security"]
+          }
+          file {
+            path => "/var/log/nginx/performance.log"
+            start_position => "beginning"
+            codec => "json"
+            tags => ["nginx", "performance"]
+          }
+        }
+        
+        filter {
+          if "nginx" in [tags] {
+            date {
+              match => [ "timestamp", "ISO8601" ]
+            }
+            
+            if [remote_addr] {
+              geoip {
+                source => "remote_addr"
+                target => "geoip"
+              }
+            }
+            
+            if [http_user_agent] {
+              useragent {
+                source => "http_user_agent"
+                target => "user_agent"
+              }
+            }
+          }
+        }
+        
+        output {
+          elasticsearch {
+            hosts => ["elasticsearch:9200"]
+            index => "nginx-logs-%{+YYYY.MM.dd}"
+          }
+          stdout { codec => rubydebug }
+        }
+        EOF
+        /usr/local/bin/docker-entrypoint
+      '
+
+  # ===========================================
+  # Kibana - 日志可视化和分析
+  # ===========================================
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: dify-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_NAME=kibana
+      - SERVER_HOST=0.0.0.0
+    volumes:
+      - kibana_data:/usr/share/kibana/data
+    ports:
+      - "5601:5601"
+    networks:
+      - logging
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  elasticsearch_data:
+    driver: local
+  logstash_data:
+    driver: local
+  kibana_data:
+    driver: local
+
+networks:
+  logging:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

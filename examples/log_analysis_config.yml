@@ -1,0 +1,318 @@
+# 企业级日志分析配置示例
+# 支持 ELK Stack (Elasticsearch, Logstash, Kibana) 和 Grafana + Prometheus
+
+# ===========================================
+# Logstash 配置 (logstash.conf)
+# ===========================================
+logstash_config: |
+  input {
+    # 读取 Nginx 日志文件
+    file {
+      path => "/var/log/nginx/access.log"
+      start_position => "beginning"
+      type => "nginx_access"
+      codec => "json"
+    }
+    
+    file {
+      path => "/var/log/nginx/app_routing.log"
+      start_position => "beginning"
+      type => "app_routing"
+      codec => "json"
+    }
+    
+    file {
+      path => "/var/log/nginx/security_audit.log"
+      start_position => "beginning"
+      type => "security_audit"
+      codec => "json"
+    }
+    
+    file {
+      path => "/var/log/nginx/performance.log"
+      start_position => "beginning"
+      type => "performance"
+      codec => "json"
+    }
+    
+    file {
+      path => "/var/log/nginx/error.log"
+      start_position => "beginning"
+      type => "nginx_error"
+    }
+  }
+  
+  filter {
+    # 处理时间戳
+    if [timestamp] {
+      date {
+        match => [ "timestamp", "ISO8601" ]
+      }
+    }
+    
+    # 添加地理位置信息
+    if [remote_addr] {
+      geoip {
+        source => "remote_addr"
+        target => "geoip"
+      }
+    }
+    
+    # 解析 User-Agent
+    if [http_user_agent] {
+      useragent {
+        source => "http_user_agent"
+        target => "user_agent"
+      }
+    }
+    
+    # 添加告警级别
+    if [type] == "security_audit" {
+      mutate {
+        add_field => { "alert_level" => "high" }
+      }
+    }
+    
+    if [status] >= 500 {
+      mutate {
+        add_field => { "alert_level" => "critical" }
+      }
+    } else if [status] >= 400 {
+      mutate {
+        add_field => { "alert_level" => "warning" }
+      }
+    }
+    
+    # 性能分类
+    if [request_time] {
+      if [request_time] > 5.0 {
+        mutate {
+          add_field => { "performance_category" => "very_slow" }
+        }
+      } else if [request_time] > 2.0 {
+        mutate {
+          add_field => { "performance_category" => "slow" }
+        }
+      } else if [request_time] > 1.0 {
+        mutate {
+          add_field => { "performance_category" => "moderate" }
+        }
+      } else {
+        mutate {
+          add_field => { "performance_category" => "fast" }
+        }
+      }
+    }
+  }
+  
+  output {
+    elasticsearch {
+      hosts => ["elasticsearch:9200"]
+      index => "nginx-logs-%{+YYYY.MM.dd}"
+    }
+    
+    # 发送告警到 Slack/钉钉
+    if [alert_level] == "critical" {
+      http {
+        url => "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+        http_method => "post"
+        format => "json"
+        mapping => {
+          "text" => "🚨 Critical Error: %{message}"
+          "channel" => "#alerts"
+        }
+      }
+    }
+  }
+
+# ===========================================
+# Kibana 仪表板配置
+# ===========================================
+kibana_dashboards:
+  - name: "Nginx 访问概览"
+    visualizations:
+      - type: "line_chart"
+        title: "请求量趋势"
+        metrics: "count"
+        time_field: "@timestamp"
+        
+      - type: "pie_chart"
+        title: "状态码分布"
+        field: "status"
+        
+      - type: "data_table"
+        title: "Top 访问IP"
+        field: "remote_addr"
+        
+      - type: "heatmap"
+        title: "响应时间热力图"
+        x_axis: "@timestamp"
+        y_axis: "request_time"
+        
+  - name: "安全监控"
+    visualizations:
+      - type: "line_chart"
+        title: "安全事件趋势"
+        filter: 'type:"security_audit"'
+        
+      - type: "data_table"
+        title: "可疑IP列表"
+        filter: 'alert_level:"high"'
+        
+      - type: "map"
+        title: "攻击来源地图"
+        geo_field: "geoip.location"
+        
+  - name: "性能监控"
+    visualizations:
+      - type: "histogram"
+        title: "响应时间分布"
+        field: "request_time"
+        
+      - type: "line_chart"
+        title: "平均响应时间"
+        metrics: "avg"
+        field: "request_time"
+        
+      - type: "data_table"
+        title: "慢查询Top 10"
+        filter: 'performance_category:"slow" OR performance_category:"very_slow"'
+
+# ===========================================
+# Grafana + Prometheus 配置
+# ===========================================
+prometheus_config: |
+  # prometheus.yml
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+  
+  rule_files:
+    - "nginx_alerts.yml"
+  
+  scrape_configs:
+    - job_name: 'nginx-exporter'
+      static_configs:
+        - targets: ['nginx-exporter:9113']
+    
+    - job_name: 'node-exporter'
+      static_configs:
+        - targets: ['node-exporter:9100']
+
+grafana_dashboards:
+  - name: "Nginx 性能监控"
+    panels:
+      - title: "请求率 (RPS)"
+        type: "graph"
+        query: "rate(nginx_http_requests_total[5m])"
+        
+      - title: "平均响应时间"
+        type: "graph"
+        query: "nginx_http_request_duration_seconds"
+        
+      - title: "错误率"
+        type: "graph"
+        query: "rate(nginx_http_requests_total{status=~"4..|5.."}[5m])"
+        
+      - title: "活跃连接数"
+        type: "singlestat"
+        query: "nginx_connections_active"
+        
+      - title: "状态码分布"
+        type: "piechart"
+        query: "nginx_http_requests_total"
+        
+  - name: "业务监控"
+    panels:
+      - title: "各应用类型请求量"
+        type: "graph"
+        query: "rate(nginx_http_requests_total[5m]) by (app_type)"
+        
+      - title: "后端实例负载"
+        type: "graph"
+        query: "rate(nginx_http_requests_total[5m]) by (backend_instance)"
+        
+      - title: "用户活跃度"
+        type: "graph"
+        query: "count by (user_id) (rate(nginx_http_requests_total[5m]))"
+
+# ===========================================
+# 告警规则配置
+# ===========================================
+alert_rules: |
+  # nginx_alerts.yml
+  groups:
+    - name: nginx_alerts
+      rules:
+        - alert: NginxHighErrorRate
+          expr: rate(nginx_http_requests_total{status=~"5.."}[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Nginx 5xx错误率过高"
+            description: "5xx错误率超过10%，持续5分钟"
+            
+        - alert: NginxSlowResponse
+          expr: nginx_http_request_duration_seconds > 2
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Nginx 响应时间过慢"
+            description: "平均响应时间超过2秒"
+            
+        - alert: NginxSecurityEvent
+          expr: increase(nginx_security_events_total[5m]) > 10
+          for: 1m
+          labels:
+            severity: high
+          annotations:
+            summary: "检测到安全事件"
+            description: "5分钟内安全事件超过10次"
+            
+        - alert: NginxHighTraffic
+          expr: rate(nginx_http_requests_total[5m]) > 1000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Nginx 流量过高"
+            description: "请求率超过1000 RPS，持续5分钟"
+
+# ===========================================
+# 日志保留策略
+# ===========================================
+log_retention_policy:
+  elasticsearch:
+    # 索引生命周期管理
+    hot_phase: "7d"      # 热数据保留7天
+    warm_phase: "30d"    # 温数据保留30天
+    cold_phase: "90d"    # 冷数据保留90天
+    delete_phase: "365d" # 1年后删除
+    
+  file_system:
+    access_logs: "30d"
+    error_logs: "30d"
+    security_logs: "90d"  # 安全日志保留更长时间
+    performance_logs: "14d"
+
+# ===========================================
+# 日志分析查询示例
+# ===========================================
+useful_queries:
+  elasticsearch:
+    # 查找异常IP
+    - "GET /nginx-logs-*/_search?q=status:>=400 AND remote_addr:* | head -100"
+    
+    # 分析API使用情况
+    - "GET /nginx-logs-*/_search { \"aggs\": { \"api_usage\": { \"terms\": { \"field\": \"request_uri.keyword\" } } } }"
+    
+    # 性能分析
+    - "GET /nginx-logs-*/_search?q=request_time:>2.0 | sort @timestamp desc"
+    
+  kibana:
+    # 创建自定义搜索
+    - "status:>=400 AND app_type:* | top 10 remote_addr"
+    - "request_time:>1.0 | avg request_time by backend_instance"
+    - "event_type:\"security_event\" | timeline @timestamp"

@@ -12,7 +12,7 @@ services:
       - ./openresty/conf/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./openresty/conf/conf.d:/usr/local/openresty/nginx/conf/conf.d:ro
       - ./openresty/lua:/usr/local/openresty/lualib/app:ro
-      - ./openresty/logs:/var/log/openresty
+      - ./openresty/logs:/usr/local/openresty/nginx/logs
       - ./openresty/ssl:/etc/openresty/ssl:ro
     environment:
       - TZ=Asia/Shanghai
